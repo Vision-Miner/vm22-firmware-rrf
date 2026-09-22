@@ -3049,7 +3049,7 @@ void Platform::SetIdleCurrentFactor(float f) noexcept
 	reprap.MoveUpdated();
 
 #if SUPPORT_CAN_EXPANSION
-	CanDriversData<float> canDriversToUpdate;
+	CanDriversList canDriversToUpdate;
 #endif
 	for (size_t axisOrExtruder = 0; axisOrExtruder < MaxAxesPlusExtruders; ++axisOrExtruder)
 	{
@@ -3059,14 +3059,13 @@ void Platform::SetIdleCurrentFactor(float f) noexcept
 			IterateDrivers(axisOrExtruder,
 							[this, requiredCurrent](uint8_t driver){ UpdateMotorCurrent(driver, requiredCurrent); }
 #if SUPPORT_CAN_EXPANSION
-								, [this, requiredCurrent, &canDriversToUpdate](DriverId driver) { canDriversToUpdate.AddEntry(driver, (uint16_t)requiredCurrent); }
+								, [&canDriversToUpdate](DriverId driver) { canDriversToUpdate.AddEntry(driver); }
 #endif
 						  );
 		}
 	}
 #if SUPPORT_CAN_EXPANSION
-	String<1> dummy;
-	(void)CanInterface::SetRemoteDriverCurrents(canDriversToUpdate, dummy.GetRef());
+	CanInterface::SetRemoteDriversIdle(canDriversToUpdate, idleCurrentFactor);
 #endif
 }
 
