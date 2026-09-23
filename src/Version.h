@@ -8,12 +8,10 @@
 #ifndef SRC_VERSION_H_
 #define SRC_VERSION_H_
 
-// Vision Miner debug build identity (branch visionminer-3.5-debug only).
-// VM_DEBUG_API is the contract level shared with the DWC Debug Tools plugin, which refuses
-// to drive a firmware reporting a different one. VM_DEBUG_BUILD is this branch's own release
-// counter within that level; it restarts at 1 whenever VM_DEBUG_API is raised.
-// Keep this block here, several lines away from MAIN_VERSION below: visionminer-3.5 only ever
-// edits that one line, so the two sides never land in the same merge hunk.
+// Debug build identity: VERSION becomes <MAIN_VERSION>.dbg.<API>.<BUILD>, 23 characters at most.
+// VM_DEBUG_API is the contract level the Debug Tools plugin checks; when to raise it, and the
+// counter rules, are in that plugin's README. Keep these lines clear of MAIN_VERSION below, which
+// is the only line visionminer-3.5 ever edits, so merges from it stay conflict-free.
 #define VM_DEBUG_API	"1"
 #define VM_DEBUG_BUILD	"1"
 #define VM_DEBUG_SUFFIX	".dbg." VM_DEBUG_API "." VM_DEBUG_BUILD
