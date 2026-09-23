@@ -13,6 +13,7 @@
 #include "Socket.h"
 #include "GCodes/GCodes.h"
 #include "General/IP4String.h"
+#include "Version.h"					// VM_DEBUG_API and VERSION, reported by rr_debugtrace
 
 #define KO_START "rr_"
 const size_t KoFirst = 3;
@@ -576,8 +577,10 @@ bool HttpResponder::GetJsonResponse(const char *_ecv_array request, OutputBuffer
 			gc.ParseDebugTraceMeta(metaVal);
 		}
 
+		// vmDebugApi is the contract level the plugin checks; being a literal, it also identifies the binary
 		String<StringLength256> cfg;
-		response->printf("{\"err\":0,\"v\":%u,\"dest\":\"", gc.GetDebugTraceVerbosity());
+		response->printf("{\"err\":0,\"vmDebugApi\":" VM_DEBUG_API ",\"fwVersion\":\"" VERSION "\",\"v\":%u,\"dest\":\"",
+							gc.GetDebugTraceVerbosity());
 		gc.AppendDebugTraceDestinations(cfg.GetRef());
 		response->cat(cfg.c_str());
 		response->cat("\",\"channels\":\"");
