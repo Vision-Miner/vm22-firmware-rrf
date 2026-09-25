@@ -8,23 +8,49 @@ where `3.5.4` is the upstream RepRapFirmware release it is based on and `N`
 increases with each Vision Miner release. The version is visible in the response
 to `M115` and in Duet Web Control.
 
-Supported host platform: Linux x86_64.
+Supported host platforms: Linux x86_64 and macOS on Apple silicon
+(`linux-x86_64`, `darwin-arm64`). Releases are built by CI on Linux.
 
 ## Requirements
 
 These are installed on the machine, not by the build system:
 
-| requirement                           | used for                                                                      |
-| ------------------------------------- | ----------------------------------------------------------------------------- |
-| Eclipse CDT                           | the build engine; validated with Eclipse 4.40.0 (2026-06)                     |
-| .NET 6 runtime                        | `CrcAppender`, which appends the checksum a board requires to accept firmware |
-| Python 3                              | `.uf2` targets only (Duet 3 Mini)                                             |
-| git, curl or wget, tar, xz, sha256sum | fetching and unpacking                                                        |
+| requirement                                 | used for                                                                      |
+| ------------------------------------------- | ----------------------------------------------------------------------------- |
+| Eclipse CDT                                 | the build engine; validated with Eclipse 4.40.0 (2026-06)                     |
+| .NET 6 runtime                              | `CrcAppender`, which appends the checksum a board requires to accept firmware |
+| Python 3                                    | `.uf2` targets only (Duet 3 Mini)                                             |
+| git, make, curl or wget, tar, xz, sha256sum | fetching, unpacking and building                                              |
 
 `build.sh doctor` reports which of these are missing or of an unexpected version.
 
 The ARM compiler and the RepRapFirmware library sources are not system packages;
-`build.sh bootstrap` installs them at the versions pinned in `repos.conf`.
+`build.sh bootstrap` installs them at the versions pinned in `repos.conf`, where
+each toolchain archive is pinned once per host.
+
+### macOS on Apple silicon
+
+- **Command Line Tools** (`xcode-select --install`) provide `git` and `make`.
+  Until they are installed, `/usr/bin/git` and `/usr/bin/make` are only stubs.
+  `xz` and `sha256sum` are not needed: the system `tar` unpacks `.tar.xz` by
+  itself, and checksums are computed with `shasum`.
+- **Rosetta 2 and the x64 .NET 6 runtime.** `CrcAppender` is vendored for
+  x86_64 only, so it runs under Rosetta 2 (`softwareupdate --install-rosetta`)
+  and needs the **x64** .NET 6 runtime; the arm64 runtime does not satisfy it.
+  The x64 runtime is installed apart from the arm64 one, under
+  `/usr/local/share/dotnet/x64`. `doctor` looks there, in the location recorded
+  in `/etc/dotnet/install_location_x64`, and in `$DOTNET_ROOT_X64`; the build
+  passes the one it finds to `CrcAppender` as `DOTNET_ROOT_X64`.
+- **Eclipse** is found in `tools/eclipse`, on `PATH`, or as `Eclipse.app` in
+  `/Applications` or `~/Applications`. `bootstrap --with-eclipse` unpacks the
+  pinned `Eclipse.app` into `tools/eclipse`.
+- The WiFi-module firmware (`--with-wifi-fw`) cannot be built on this host: no
+  Xtensa toolchain is pinned for it.
+
+A `release-build` on macOS runs the same checks as on Linux, but uses the Arm
+compiler built for macOS. The same compiler release built for another host is
+expected to produce the same code, but byte-identity with the binaries CI
+publishes has not been verified; compare checksums before relying on it.
 
 ## Setting up
 
@@ -183,13 +209,13 @@ workspace-selection dialog and waits for input. `build.sh` always passes it.
 
 ### Files
 
-| file                  | purpose                                                 |
-| --------------------- | ------------------------------------------------------- |
-| `build.sh`            | all build commands                                      |
-| `repos.conf`          | pinned library repositories, toolchain and version base |
-| `targets.conf`        | build targets and their published artifacts             |
-| `check-version.sh`    | verifies that a tag matches `src/Version.h`             |
-| `completion/_vmbuild` | zsh completion (see below)                              |
+| file                  | purpose                                                                   |
+| --------------------- | ------------------------------------------------------------------------- |
+| `build.sh`            | all build commands                                                        |
+| `repos.conf`          | pinned library repositories, per-host toolchain archives and version base |
+| `targets.conf`        | build targets and their published artifacts                               |
+| `check-version.sh`    | verifies that a tag matches `src/Version.h`                               |
+| `completion/_vmbuild` | zsh completion (see below)                                                |
 
 ### Shell completion
 
@@ -215,6 +241,7 @@ caches the list of available completions.
 | ----------------- | ---------------------------------------------------- |
 | `RRF_WS`          | workspace location                                   |
 | `RRF_ALLOW_DIRTY` | permits `release-build` from a modified working tree |
+| `DOTNET_ROOT_X64` | macOS: location of the x64 .NET 6 runtime            |
 | `NO_COLOR`        | plain output                                         |
 
 ## Current status
