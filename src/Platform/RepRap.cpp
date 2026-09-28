@@ -253,6 +253,9 @@ constexpr ObjectModelArrayTableEntry RepRap::objectModelArrayTable[] =
 
 DEFINE_GET_OBJECT_MODEL_ARRAY_TABLE(RepRap)
 
+// VisionMiner: capability level of this fork, read by the macros as state.vmFeatureLevel (1 = the IDEX cross-tool resume fix in GCodes4.cpp)
+constexpr int32_t VmFeatureLevel = 1;
+
 constexpr unsigned int StateSubTableNumber = 3;		// section number of 'state' in the following
 constexpr ObjectModelTableEntry RepRap::objectModelTable[] =
 {
@@ -374,6 +377,7 @@ constexpr ObjectModelTableEntry RepRap::objectModelTable[] =
 	{ "thisInput",				OBJECT_MODEL_FUNC_IF_NOSELF(context.GetGCodeBuffer() != nullptr, (int32_t)context.GetGCodeBuffer()->GetChannel().ToBaseType()),	ObjectModelEntryFlags::verbose },
 	{ "time",					OBJECT_MODEL_FUNC(DateTime(self->platform->GetDateTime())),				ObjectModelEntryFlags::live },
 	{ "upTime",					OBJECT_MODEL_FUNC_NOSELF((int32_t)((context.GetStartMillis()/1000u) & 0x7FFFFFFF)),	ObjectModelEntryFlags::live },
+	{ "vmFeatureLevel",			OBJECT_MODEL_FUNC_NOSELF((int32_t)VmFeatureLevel),							ObjectModelEntryFlags::none },
 
 	// 4. state.beep
 	{ "duration",				OBJECT_MODEL_FUNC((int32_t)self->beepDuration),							ObjectModelEntryFlags::none },
@@ -429,7 +433,7 @@ constexpr uint8_t RepRap::objectModelTableDescriptor[] =
 	0,																						// directories
 #endif
 	26 + SUPPORT_LED_STRIPS,																// limits
-	22 + HAS_VOLTAGE_MONITOR + SUPPORT_LASER,												// state
+	23 + HAS_VOLTAGE_MONITOR + SUPPORT_LASER,												// state
 	2,																						// state.beep
 	12 + HAS_NETWORKING + (2 * HAS_MASS_STORAGE) + (HAS_MASS_STORAGE | HAS_EMBEDDED_FILES | HAS_SBC_INTERFACE) + SUPPORT_LED_STRIPS,	// seqs
 	3																						// state.configErr
