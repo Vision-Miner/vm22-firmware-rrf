@@ -527,11 +527,20 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			for (MovementState& tempMs : moveStates)
 			{
 				SetMoveBufferDefaults(tempMs);
+
+				// vmfeature 1 if the tool was changed while paused, don't restore a non-XYZ axis that only the paused tool maps X or Y to (IDEX U after T1 -> T0)
+				AxesBitmap axesNotToRestore;
+				{
+					ReadLockedPointer<Tool> const pausedTool = Tool::GetLockedTool(tempMs.GetPauseRestorePoint().toolNumber);
+					axesNotToRestore = (Tool::GetXAxes(pausedTool.Ptr()) | Tool::GetYAxes(pausedTool.Ptr())) - (tempMs.GetCurrentXAxes() | tempMs.GetCurrentYAxes());
+				}
+
 				for (size_t axis = 0; axis < numVisibleAxes; ++axis)
 				{
 					// We may restore this axis if either this motion system owns it or this is motion system 0 and the axis is free
 					if (   (tempMs.GetAxesAndExtrudersOwned().IsBitSet(axis) || (tempMs.GetMsNumber() == 0 && IsAxisFree(axis)))
 						&& tempMs.currentUserPosition[axis] != tempMs.GetPauseRestorePoint().moveCoords[axis]
+						&& (axis < XYZ_AXES || !axesNotToRestore.IsBitSet(axis))
 					   )
 					{
 						// This motion system may restore the position of this axis
