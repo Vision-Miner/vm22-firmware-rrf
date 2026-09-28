@@ -57,6 +57,20 @@ done
 VERSION_HEADER="${RRF_ROOT}/src/Version.h"
 BUILD_LOG="${WS}/last-build.log"
 
+# --- Host --------------------------------------------------------------------
+# Toolchains are pinned per host in repos.conf. HOST is empty on a host that
+# has no pins. A shell running under Rosetta 2 reports x86_64 on Apple silicon;
+# the machine underneath is what the native toolchain has to match.
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_OS" = "Darwin" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then HOST_ARCH="arm64"; fi
+case "${HOST_OS}-${HOST_ARCH}" in
+	Linux-x86_64) HOST="linux-x86_64" ;;
+	Darwin-arm64) HOST="darwin-arm64" ;;
+	*)            HOST="" ;;
+esac
+SUPPORTED_HOSTS="linux-x86_64, darwin-arm64"
+
 # Quiet build output by default; V=1 or --verbose shows everything Eclipse says.
 VERBOSE="no"
 if [ "${V:-0}" = "1" ]; then VERBOSE="yes"; fi
@@ -106,19 +120,63 @@ target_artifacts() {
 	for ext in $exts; do printf '%s/%s/%s.%s\n' "$RRF_ROOT" "$name" "$base" "$ext"; done
 }
 
+# Echo this host's line from a list of "host|url|checksum" archive pins, or fail
+# when the host has none.
+host_archive() {
+	local entry host
+	for entry in "$@"; do
+		IFS='|' read -r host _ _ <<< "$entry"
+		if [ "$host" = "$HOST" ]; then printf '%s' "$entry"; return 0; fi
+	done
+	return 1
+}
+
 # --- Tool discovery ----------------------------------------------------------
 # Eclipse is never executed to probe it: without -application it opens the
 # workspace-chooser GUI and blocks. Version and CDT presence come from files.
 
-eclipse_bin() {
-	if [ -x "${ECLIPSE_DIR}/eclipse" ]; then printf '%s' "${ECLIPSE_DIR}/eclipse"
-	elif have eclipse; then command -v eclipse
-	else return 1; fi
+# Resolve symlinks down to the real file, as GNU `readlink -f` does; older macOS
+# releases have no -f.
+resolve_path() {
+	local p="$1" link
+	while [ -L "$p" ]; do
+		link="$(readlink "$p")"
+		case "$link" in
+			/*) p="$link" ;;
+			*)  p="$(dirname "$p")/${link}" ;;
+		esac
+	done
+	printf '%s/%s' "$(cd -P "$(dirname "$p")" && pwd -P)" "$(basename "$p")"
 }
 
+# The launcher of the pinned copy in tools/eclipse. The Linux archive's top
+# directory is stripped when it is unpacked; the macOS archive is an Eclipse.app
+# bundle and is unpacked whole.
+pinned_eclipse_bin() {
+	if [ "$HOST_OS" = "Darwin" ]; then printf '%s' "${ECLIPSE_DIR}/Eclipse.app/Contents/MacOS/eclipse"
+	else printf '%s' "${ECLIPSE_DIR}/eclipse"; fi
+}
+
+eclipse_bin() {
+	local app
+	if [ -x "$(pinned_eclipse_bin)" ]; then pinned_eclipse_bin; return 0; fi
+	if have eclipse; then command -v eclipse; return 0; fi
+	# On macOS Eclipse is installed as an application bundle, with nothing on PATH.
+	[ "$HOST_OS" = "Darwin" ] || return 1
+	for app in /Applications/Eclipse.app "${HOME}/Applications/Eclipse.app"; do
+		if [ -x "${app}/Contents/MacOS/eclipse" ]; then printf '%s' "${app}/Contents/MacOS/eclipse"; return 0; fi
+	done
+	return 1
+}
+
+# The installation directory: the one holding plugins/ and .eclipseproduct.
 eclipse_home() {
-	local bin; bin="$(eclipse_bin)" || return 1
-	dirname "$(readlink -f "$bin")"
+	local bin dir; bin="$(eclipse_bin)" || return 1
+	dir="$(dirname "$(resolve_path "$bin")")"
+	# In a macOS bundle the launcher is Contents/MacOS/eclipse and the
+	# installation it starts is Contents/Eclipse.
+	case "$dir" in */Contents/MacOS) dir="${dir%/MacOS}/Eclipse" ;; esac
+	printf '%s' "$dir"
 }
 
 eclipse_version() {
@@ -147,7 +205,33 @@ xtensa_gcc() {
 
 dotnet6_present() { have dotnet && dotnet --list-runtimes 2>/dev/null | grep -q "Microsoft.NETCore.App 6\."; }
 
-current_version() { sed -n 's/^# *define[ \t]*MAIN_VERSION[ \t]*"\(.*\)".*/\1/p' "$VERSION_HEADER"; }
+rosetta_present() { /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; }
+
+# CrcAppender is vendored for x86_64 only, so on Apple silicon it runs under
+# Rosetta 2 and needs the x64 .NET 6 runtime, which is installed apart from the
+# arm64 one. Echo that runtime's root: $DOTNET_ROOT_X64, the location recorded
+# in /etc/dotnet/install_location_x64, or Microsoft's default for it.
+dotnet6_x64_root() {
+	local root
+	for root in "${DOTNET_ROOT_X64:-}" "$(cat /etc/dotnet/install_location_x64 2>/dev/null)" /usr/local/share/dotnet/x64; do
+		[ -n "$root" ] || continue
+		if compgen -G "${root}/shared/Microsoft.NETCore.App/6.*" >/dev/null 2>&1; then printf '%s' "$root"; return 0; fi
+	done
+	return 1
+}
+
+crc_runtime_present() {
+	if [ "$HOST" = "darwin-arm64" ]; then rosetta_present && dotnet6_x64_root >/dev/null
+	else dotnet6_present; fi
+}
+
+# The vendored CrcAppender this host runs. The repository carries no arm64 build.
+crcappender_src() {
+	if [ "$HOST_OS" = "Darwin" ]; then printf '%s' "${RRF_ROOT}/Tools/CrcAppender/macos-x86_64/CrcAppender"
+	else printf '%s' "${RRF_ROOT}/Tools/CrcAppender/linux-x86_64/CrcAppender"; fi
+}
+
+current_version() { sed -n 's/^# *define[[:space:]]*MAIN_VERSION[[:space:]]*"\(.*\)".*/\1/p' "$VERSION_HEADER"; }
 
 # --- Downloads ---------------------------------------------------------------
 # A download is only trusted once its sha256 is pinned in repos.conf. Until then
@@ -155,10 +239,18 @@ current_version() { sed -n 's/^# *define[ \t]*MAIN_VERSION[ \t]*"\(.*\)".*/\1/p'
 # Checksums are pinned as "<algo>:<hex>"; a bare value is read as sha256. Vendors
 # publish different algorithms — ARM publish sha256, Eclipse sha512 — and pinning
 # what they publish avoids downloading a release just to hash it.
+#
+# GNU coreutils provide sha256sum and sha512sum; macOS provides shasum, which
+# prints the same "<hex>  <file>" line.
+sha_line() {
+	if have "sha${1}sum"; then "sha${1}sum" "$2"
+	else shasum -a "$1" "$2"; fi
+}
+
 checksum_of() {
 	case "$2" in
-		sha256) sha256sum "$1" | cut -d' ' -f1 ;;
-		sha512) sha512sum "$1" | cut -d' ' -f1 ;;
+		sha256) sha_line 256 "$1" | cut -d' ' -f1 ;;
+		sha512) sha_line 512 "$1" | cut -d' ' -f1 ;;
 		*) die "unsupported checksum algorithm '$2'" ;;
 	esac
 }
@@ -211,32 +303,39 @@ install_toolchain() {
 }
 
 setup_toolchains() {
-	local with_wifi_fw="$1" with_eclipse="$2"
+	local with_wifi_fw="$1" with_eclipse="$2" entry url pin
 	section "Toolchains"
 	mkdir -p "$BIN_DIR"
-	install_toolchain "ARM GCC ${ARM_GCC_VERSION}" "$ARM_GCC_URL" "$ARM_GCC_DIR" "arm-none-eabi-gcc" "$ARM_GCC_CHECKSUM"
+	entry="$(host_archive "${ARM_GCC_ARCHIVES[@]}")" || die "repos.conf pins no ARM GCC archive for ${HOST}."
+	IFS='|' read -r _ url pin <<< "$entry"
+	install_toolchain "ARM GCC ${ARM_GCC_VERSION}" "$url" "$ARM_GCC_DIR" "arm-none-eabi-gcc" "$pin"
 	if [ "$with_wifi_fw" = "yes" ]; then
-		install_toolchain "Xtensa GCC" "$XTENSA_GCC_URL" "$XTENSA_GCC_DIR" "xtensa-lx106-elf-gcc" "$XTENSA_GCC_CHECKSUM"
+		entry="$(host_archive "${XTENSA_GCC_ARCHIVES[@]}")" || die "repos.conf pins no Xtensa GCC archive for ${HOST} — the WiFi-module firmware cannot be built on this host."
+		IFS='|' read -r _ url pin <<< "$entry"
+		install_toolchain "Xtensa GCC" "$url" "$XTENSA_GCC_DIR" "xtensa-lx106-elf-gcc" "$pin"
 	else
 		info "Xtensa toolchain skipped (only the WiFi-module firmware needs it; pass --with-wifi-fw)"
 	fi
 
 	# The pinned Eclipse is a 400 MB download, so it is fetched only when the
 	# machine has none — which is the case on a CI runner — or when asked for.
-	if [ -x "${ECLIPSE_DIR}/eclipse" ]; then
+	url=""; pin=""
+	if entry="$(host_archive "${ECLIPSE_ARCHIVES[@]}")"; then IFS='|' read -r _ url pin <<< "$entry"; fi
+	if [ -x "$(pinned_eclipse_bin)" ]; then
 		ok "Eclipse already installed in tools/eclipse"
-	elif [ -z "$ECLIPSE_URL" ]; then
-		info "No ECLIPSE_URL pinned — using the Eclipse installed on this machine"
+	elif [ -z "$url" ]; then
+		info "No Eclipse archive pinned for ${HOST} — using the Eclipse installed on this machine"
 	elif [ "$with_eclipse" != "yes" ] && eclipse_has_cdt 2>/dev/null; then
 		info "Eclipse with CDT found on this machine — skipping the pinned copy (pass --with-eclipse to install it anyway)"
 	else
 		mkdir -p "$ECLIPSE_DIR"
-		local archive="${TOOLS_DIR}/.dl-eclipse.archive"
-		fetch_verify "Eclipse ${ECLIPSE_EXPECTED_VERSION}" "$ECLIPSE_URL" "$archive" "$ECLIPSE_CHECKSUM"
+		local archive="${TOOLS_DIR}/.dl-eclipse.archive" strip=1
+		fetch_verify "Eclipse ${ECLIPSE_EXPECTED_VERSION}" "$url" "$archive" "$pin"
 		info "Extracting Eclipse…"
-		tar -xf "$archive" -C "$ECLIPSE_DIR" --strip-components=1
+		if [ "$HOST_OS" = "Darwin" ]; then strip=0; fi
+		tar -xf "$archive" -C "$ECLIPSE_DIR" --strip-components="$strip"
 		rm -f "$archive"
-		[ -x "${ECLIPSE_DIR}/eclipse" ] || die "Eclipse extracted but tools/eclipse/eclipse is missing — the archive layout may have changed."
+		[ -x "$(pinned_eclipse_bin)" ] || die "Eclipse extracted but $(pinned_eclipse_bin) is missing — the archive layout may have changed."
 		ok "Eclipse installed into tools/eclipse"
 	fi
 }
@@ -314,12 +413,16 @@ verify_dep_pins() {
 
 setup_crcappender() {
 	section "CrcAppender"
-	local src="${RRF_ROOT}/Tools/CrcAppender/linux-x86_64/CrcAppender"
+	local src; src="$(crcappender_src)"
 	[ -f "$src" ] || die "CrcAppender not found at ${src}"
 	mkdir -p "$BIN_DIR"
 	install -m 755 "$src" "${BIN_DIR}/CrcAppender"
 	ok "CrcAppender installed into tools/bin"
-	dotnet6_present || warn ".NET 6 runtime missing — CrcAppender will fail during the post-build step"
+	if [ "$HOST" = "darwin-arm64" ]; then
+		crc_runtime_present || warn "Rosetta 2 or the x64 .NET 6 runtime is missing — CrcAppender will fail during the post-build step (see 'build.sh doctor')"
+	else
+		crc_runtime_present || warn ".NET 6 runtime missing — CrcAppender will fail during the post-build step"
+	fi
 }
 
 # --- Build output ------------------------------------------------------------
@@ -422,8 +525,8 @@ build_filter() {
 # --- Eclipse -----------------------------------------------------------------
 run_eclipse() {
 	local mode="$1"; shift
-	local ecl gcc entry name dir cfg
-	ecl="$(eclipse_bin)" || die "Eclipse not found — install Eclipse CDT, or set ECLIPSE_URL in repos.conf and re-run bootstrap."
+	local ecl gcc entry name dir cfg x64root
+	ecl="$(eclipse_bin)" || die "Eclipse not found — install Eclipse CDT, or pin an Eclipse archive for ${HOST:-this host} in repos.conf and re-run bootstrap."
 	eclipse_has_cdt || die "Eclipse at $(eclipse_home) has no CDT managed-build plugin."
 	gcc="$(arm_gcc)" || die "ARM toolchain missing — run 'build.sh bootstrap'."
 
@@ -449,6 +552,9 @@ run_eclipse() {
 	for cfg in "$@"; do args+=("$mode" "RepRapFirmware/${cfg}"); done
 
 	export PATH="${BIN_DIR}:${PATH}"
+	# The post-build step runs CrcAppender under Rosetta 2. Name the x64 runtime
+	# explicitly, so a DOTNET_ROOT meant for the arm64 one cannot mislead it.
+	if [ "$HOST" = "darwin-arm64" ] && x64root="$(dotnet6_x64_root)"; then export DOTNET_ROOT_X64="$x64root"; fi
 	info "Eclipse: ${ecl} ($(eclipse_version 2>/dev/null || printf 'unknown version'))"
 	info "ARM GCC: ${gcc} ($("$gcc" -dumpversion))"
 	info "projects: ${imported[*]}"
@@ -490,7 +596,7 @@ report_artifacts() {
 	for cfg in "$@"; do
 		while read -r file; do
 			if [ -f "$file" ]; then
-				ok "$(basename "$file") — $(du -h "$file" | cut -f1)  sha256 $(sha256sum "$file" | cut -c1-16)…"
+				ok "$(basename "$file") — $(du -h "$file" | cut -f1)  sha256 $(sha_line 256 "$file" | cut -c1-16)…"
 				info "   ${file}"
 			else
 				err "expected artifact missing: ${file}"
@@ -513,17 +619,28 @@ cmd_doctor() {
 	info "eclipse ws ${ECLIPSE_DATA}"
 
 	section "Environment"
-	if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ]; then
-		ok "Platform: $(uname -s) $(uname -m)"
+	if [ -n "$HOST" ]; then
+		ok "Platform: ${HOST}"
 	else
-		err "Platform: $(uname -s) $(uname -m) — the pinned toolchains are Linux x86_64 only"; problems=$((problems + 1))
+		err "Platform: ${HOST_OS} ${HOST_ARCH} — toolchains are pinned for ${SUPPORTED_HOSTS} only"; problems=$((problems + 1))
 	fi
 
+	# GNU tar runs xz to unpack the ARM toolchain; the bsdtar macOS ships
+	# decompresses it by itself.
 	local missing=() c
-	for c in git tar xz sha256sum sha512sum; do have "$c" || missing+=("$c"); done
+	for c in git tar make; do have "$c" || missing+=("$c"); done
+	[ "$HOST_OS" = "Darwin" ] || have xz || missing+=("xz")
+	{ have sha256sum && have sha512sum; } || have shasum || missing+=("sha256sum and sha512sum, or shasum")
 	have curl || have wget || missing+=("curl or wget")
 	if [ ${#missing[@]} -eq 0 ]; then ok "Base tools present"
 	else err "Missing base tools: ${missing[*]}"; problems=$((problems + 1)); fi
+
+	# /usr/bin/make and /usr/bin/git are only stubs until the Command Line Tools
+	# are installed, so finding them on PATH proves nothing.
+	if [ "$HOST_OS" = "Darwin" ]; then
+		if xcode-select -p >/dev/null 2>&1; then ok "Xcode Command Line Tools present"
+		else err "Xcode Command Line Tools missing — run 'xcode-select --install'"; problems=$((problems + 1)); fi
+	fi
 
 	local ev
 	if ev="$(eclipse_version 2>/dev/null)"; then
@@ -537,7 +654,13 @@ cmd_doctor() {
 		err "Eclipse not found"; problems=$((problems + 1))
 	fi
 
-	if dotnet6_present; then ok ".NET 6 runtime present (CrcAppender)"
+	if [ "$HOST" = "darwin-arm64" ]; then
+		local x64root
+		if rosetta_present; then ok "Rosetta 2 present (CrcAppender is an x86_64 program)"
+		else err "Rosetta 2 missing — CrcAppender is an x86_64 program; run 'softwareupdate --install-rosetta'"; problems=$((problems + 1)); fi
+		if x64root="$(dotnet6_x64_root)"; then ok ".NET 6 x64 runtime present in ${x64root} (CrcAppender)"
+		else err ".NET 6 x64 runtime missing — CrcAppender needs the x64 build, not the arm64 one (or set DOTNET_ROOT_X64)"; problems=$((problems + 1)); fi
+	elif dotnet6_present; then ok ".NET 6 runtime present (CrcAppender)"
 	else err ".NET 6 runtime missing — CrcAppender needs it"; problems=$((problems + 1)); fi
 
 	local gcc v
@@ -585,7 +708,7 @@ cmd_bootstrap() {
 	done
 
 	section "Bootstrapping ${WS}"
-	[ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] || die "The pinned toolchains are Linux x86_64 only."
+	[ -n "$HOST" ] || die "Toolchains are pinned for ${SUPPORTED_HOSTS} only, not ${HOST_OS} ${HOST_ARCH}."
 	mkdir -p "$WS" "$DEPS_DIR" "$TOOLS_DIR" "$BIN_DIR"
 	setup_toolchains "$with_wifi_fw" "$with_eclipse"
 	setup_deps "$do_sync" "$with_wifi_fw"
@@ -653,7 +776,8 @@ cmd_release_build() {
 	epoch="$(git -C "$RRF_ROOT" log -1 --format=%ct HEAD)"
 	export SOURCE_DATE_EPOCH="$epoch"
 	info "version ${ver}${tag:+ (tag ${tag})}"
-	info "SOURCE_DATE_EPOCH ${epoch} — $(date -u -d "@${epoch}" '+%Y-%m-%d %H:%M:%S UTC')"
+	# GNU date reads an epoch as -d @N, BSD date as -r N.
+	info "SOURCE_DATE_EPOCH ${epoch} — $(date -u -d "@${epoch}" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || date -u -r "$epoch" '+%Y-%m-%d %H:%M:%S UTC')"
 
 	[ -d "$ECLIPSE_DATA" ] && rm -rf "$ECLIPSE_DATA"
 	run_eclipse -cleanBuild "${cfgs[@]}"
@@ -664,7 +788,7 @@ cmd_release_build() {
 	# The full checksums, in a form that can be pasted into a comparison.
 	local cfg file
 	for cfg in "${cfgs[@]}"; do
-		while read -r file; do sha256sum "$file"; done < <(target_artifacts "$cfg")
+		while read -r file; do sha_line 256 "$file"; done < <(target_artifacts "$cfg")
 	done
 }
 
