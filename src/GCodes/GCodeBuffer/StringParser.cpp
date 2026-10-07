@@ -36,6 +36,7 @@ void StringParser::Init() noexcept
 {
 	gcodeLineEnd = 0;
 	commandStart = commandLength = 0;								// set both to zero so that calls to GetFilePosition don't return negative values
+	commandEnd = 0;													// VisionMiner: AppendFullCommand (debug trace) reads it on a channel that never decoded a line
 	readPointer = -1;
 	hadLineNumber = hadChecksum = overflowed = seenExpression = false;
 	computedChecksum = 0;
