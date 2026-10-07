@@ -13,7 +13,7 @@
 // counter rules, are in that plugin's README. Keep these lines clear of MAIN_VERSION below, which
 // is the only line visionminer-3.5 ever edits, so merges from it stay conflict-free.
 #define VM_DEBUG_API	"1"
-#define VM_DEBUG_BUILD	"1"
+#define VM_DEBUG_BUILD	"2"
 #define VM_DEBUG_SUFFIX	".dbg." VM_DEBUG_API "." VM_DEBUG_BUILD
 
 #ifndef VERSION
