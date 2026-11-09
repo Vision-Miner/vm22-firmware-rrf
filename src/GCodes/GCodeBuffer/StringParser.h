@@ -130,7 +130,7 @@ private:
 
 	unsigned int commandStart;							// Index in the buffer of the command letter of this command
 	unsigned int parameterStart;
-	unsigned int commandEnd;							// Index in the buffer of one past the last character of this command
+	unsigned int commandEnd = 0;						// Index in the buffer of one past the last character of this command
 	unsigned int commandLength;							// Number of characters we read to build this command including the final \r or \n
 	unsigned int braceCount;							// how many nested { } we are inside
 	unsigned int gcodeLineEnd;							// Number of characters in the entire line of gcode
