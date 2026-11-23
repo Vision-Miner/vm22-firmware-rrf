@@ -5,9 +5,6 @@
 # up by both the typed word and its last component, so registering "build.sh"
 # would apply this file to every build.sh on the machine.
 #
-# Install by adding this directory to $fpath, before compinit:
-#   fpath=(~/VisionMiner/duet/RepRapFirmware/Tools/vm-build/completion $fpath)
-#
 # If the script is symlinked into $PATH under a unique name, register that name
 # as well:
 #   compdef _vmbuild vmfw
